@@ -3,6 +3,7 @@
 #include<sys/socket.h>
 #include<unistd.h>
 #include<netinet/in.h>
+#include <fcntl.h> //file
 
 int main() {
 	int sock0,sock;
@@ -44,8 +45,51 @@ int main() {
 	if (read(sock, filename, sizeof(filename)) > 0) {
 		printf("client wants to upload: %s\n",filename);
 	}
+	else {
+		perror("Server: 讀取檔名失敗");
+		close(sock);
+		close(sock0);
+		return 1;
+	}
+
+	//建立新檔案準備寫入
+	// O_APPEND: 確保新資料會接在檔案的最尾巴
+	int file_fd = open(filename, O_WRONLY | O_CREAT | O_APPEND, 0644);
+	if (file_fd < 0) {
+		perror("建立檔案失敗");
+		close(sock);
+		close(sock0);
+		return 1;
+	}
+
+	//告知目前有多少檔案
+	long long current_size = lseek(file_fd, 0, SEEK_END);
+	if (current_size < 0)current_size = 0;
+	else {
+		printf("目前檔案已有 %lld bytes，通知 Client 從此處續傳...\n", current_size);
+		write(sock0, &current_size, sizeof(current_size));
+	}
+
+	//接收迴圈
+	char buffer[1024];
+	int bytes_received;
+	while ((bytes_received = read(sock0, buffer, sizeof(buffer))) > 0) {
+		// 將收到的包裹寫進硬碟檔案中
+		if (write(file_fd, buffer, bytes_received) < 0) {
+			perror("Server: 寫入硬碟失敗");
+			break;
+		}
+	}
+	if (bytes_received < 0) {
+		perror("Server: 接收資料時發生錯誤 (可能斷線)");
+	}
+	else {
+		printf("\n檔案接收並儲存完畢！\n");
+	}
 
 	close(sock0);
+	close(sock);
+	close(file_fd);
 
 	return 0;
 }
