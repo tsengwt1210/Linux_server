@@ -46,7 +46,7 @@ int main() {
 		printf("client wants to upload: %s\n",filename);
 	}
 	else {
-		perror("Server: 讀取檔名失敗");
+		perror("Server: failed to read file name");
 		close(sock);
 		close(sock0);
 		return 1;
@@ -56,7 +56,7 @@ int main() {
 	// O_APPEND: 確保新資料會接在檔案的最尾巴
 	int file_fd = open(filename, O_WRONLY | O_CREAT | O_APPEND, 0644);
 	if (file_fd < 0) {
-		perror("建立檔案失敗");
+		perror("file creation failed");
 		close(sock);
 		close(sock0);
 		return 1;
@@ -66,25 +66,25 @@ int main() {
 	long long current_size = lseek(file_fd, 0, SEEK_END);
 	if (current_size < 0)current_size = 0;
 	else {
-		printf("目前檔案已有 %lld bytes，通知 Client 從此處續傳...\n", current_size);
-		write(sock0, &current_size, sizeof(current_size));
+		printf("the fil currently contains  %lld bytes, notify Client to continue transformitting from here...\n", current_size);
+		write(sock, &current_size, sizeof(current_size));
 	}
 
 	//接收迴圈
 	char buffer[1024];
 	int bytes_received;
-	while ((bytes_received = read(sock0, buffer, sizeof(buffer))) > 0) {
+	while ((bytes_received = read(sock, buffer, sizeof(buffer))) > 0) {
 		// 將收到的包裹寫進硬碟檔案中
 		if (write(file_fd, buffer, bytes_received) < 0) {
-			perror("Server: 寫入硬碟失敗");
+			perror("Server: failed to write to hard drive");
 			break;
 		}
 	}
 	if (bytes_received < 0) {
-		perror("Server: 接收資料時發生錯誤 (可能斷線)");
+		perror("Server: an error occurred while receiving data; the connection may have been lost");
 	}
 	else {
-		printf("\n檔案接收並儲存完畢！\n");
+		printf("\nfiles received and stored!\n");
 	}
 
 	close(sock0);
