@@ -1,189 +1,144 @@
-// HTTP 1.1 WWW server
+// èª²ç¨‹ç·´ç¿’ï¼šfork è™•ç†é€£ç·šï¼Œæä¾›éœæ…‹æª”æ¡ˆåŠå›ºå®šçš„ /cgi å…¥å£ã€‚
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/time.h>
 #include <netinet/in.h>
-#include <strings.h>
+#include <arpa/inet.h>
 #include <string.h>
+#include <strings.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <unistd.h>
-#include <errno.h>
+#include <sys/wait.h>
+#include <signal.h>
+#include <fcntl.h>
+#include "../io_helpers.h"
 
-#define DEBUG
-#define filecount 12      // ¤ä´©ªºÀÉ®×Ãş«¬¼Æ¶q
-#define port 9998         // ¦øªA¾¹°õ¦æªº°ğ¸¹ (Port)
-#define Maxbuff 1024      // ½w½Ä°Ï¤j¤p
-#define workplace /home/www  // ¦øªA¾¹¤u§@¥Ø¿ı
+const int port = 9998;
+const size_t Maxbuff = 1024;
 
-// ©w¸q¤ä´©ªº°ÆÀÉ¦W²M³æ
-#define sup_filetypelist \
-{".html",".HTML",".htm",".HTM",".jpg",".JPG",\
-".jpeg",".JPEG",".png",".PNG",".gif",".GIF"}
-
-// ©w¸q¹ïÀ³°ÆÀÉ¦Wªº Content-Type (HTTP ¼ĞÀY¤º®eÃş«¬)
-#define sup_respondmessagelist \
-{"text/html", "text/html", "text/html", "text.html", "image/jpg", "image/jpg", \
-"image/jpeg", "image/jpeg", "image/png", "image/png", "image/gif", "image/gif"}
-
-char curpath[Maxbuff];
-
-// ¥[¤W const¡A§i¶D½sÄ¶¾¹³o¨Ç¬O¤£¥i­×§ïªº±`¼Æ¼ĞÅÒ
-const char* filetypelist[] = sup_filetypelist;
-const char* respondmessagelist[] = sup_respondmessagelist;
-
-// ®Ú¾Ú°ÆÀÉ¦W´M§ä¹ïÀ³ªº HTTP Content-Type
-// 1. ¦^¶Ç«¬ºA­n¥[¤W const
-const char* get_respmessage(char* filetype)
-{
-	// 2. ¸Ì­±ªº ptr ¤]­n¥[¤W const
-	const char* ptr = NULL;
-	int i;
-	for (i = 0; i < filecount; i++)
-	{
-		if (!strcmp(filetype, filetypelist[i]))
-			ptr = respondmessagelist[i];
-	}
-	return ptr;
+const char* get_respmessage(const char* filename) {
+    const char* ext = strrchr(filename, '.');
+    if (!ext) return NULL;
+    if (!strcasecmp(ext, ".html") || !strcasecmp(ext, ".htm")) return "text/html; charset=utf-8";
+    if (!strcasecmp(ext, ".jpg") || !strcasecmp(ext, ".jpeg")) return "image/jpeg";
+    if (!strcasecmp(ext, ".png")) return "image/png";
+    if (!strcasecmp(ext, ".gif")) return "image/gif";
+    return NULL;
 }
 
-int main()
-{
-	getcwd(curpath, sizeof(curpath)); // ¨ú±oµ{¦¡¥Ø«eªº°õ¦æ¸ô®|
+void reply_error(int fd, const char* status) {
+    char reply[256];
+    int n = snprintf(reply, sizeof(reply),
+        "HTTP/1.1 %s\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n%s\n", status, status);
+    if (n > 0 && n < static_cast<int>(sizeof(reply))) write_all(fd, reply, static_cast<size_t>(n));
+}
 
-	int sockfd;                     // ¦øªA¾¹ºÊÅ¥¥Îªº Socket
-	struct sockaddr_in dest;        // ¦øªA¾¹¥»¨­ªº¦a§}¸ê°T
-	int s_addrlen = sizeof(dest);
-	int clientfd;                   // »P«È¤áºİ³s½u«á²£¥Íªº Socket
-	struct sockaddr_in client_addr; // «È¤áºİªº¦a§}¸ê°T
-	int c_addrlen = sizeof(client_addr);
-	socklen_t temp = c_addrlen;
+void sig_handler(int signo) {
+    if (signo == SIGCHLD) {
+        int saved = errno;
+        while (waitpid(-1, NULL, WNOHANG) > 0) {}
+        errno = saved;
+    }
+}
 
-	// 1. «Ø¥ß Socket (¶R¹q¸Ü)
-	if ((sockfd = socket(PF_INET, SOCK_STREAM, 0)) < 0)
-	{
-		perror("Server socket error"); // ¿ù»~³B²z
-		exit(-1);
-	}
+void serve_client(int fd, const sockaddr_in& client) {
+    // åªè™•ç†ä¸€å€‹çŸ­ GET è«‹æ±‚ï¼›è®€å®Œæ¨™é ­ï¼Œé¿å…æŠŠ TCP åˆ†æ®µç•¶æˆå®Œæ•´è«‹æ±‚ã€‚
+    timeval timeout = {5, 0};
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+    char request[Maxbuff] = {};
+    size_t used = 0;
+    while (strstr(request, "\r\n\r\n") == NULL) {
+        if (used == sizeof(request) - 1) { reply_error(fd, "431 Request Header Fields Too Large"); return; }
+        ssize_t n = read(fd, request + used, sizeof(request) - 1 - used);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) { reply_error(fd, "400 Bad Request"); return; }
+        if (memchr(request + used, '\0', static_cast<size_t>(n))) {
+            reply_error(fd, "400 Bad Request"); return;
+        }
+        used += static_cast<size_t>(n);
+        request[used] = '\0';
+    }
+    char method[16] = {}, target[512] = {}, version[16] = {};
+    if (sscanf(request, "%15s %511s %15s", method, target, version) != 3 ||
+        (strcmp(version, "HTTP/1.1") && strcmp(version, "HTTP/1.0"))) {
+        reply_error(fd, "400 Bad Request"); return;
+    }
+    if (strcmp(method, "GET")) { reply_error(fd, "405 Method Not Allowed"); return; }
+    if (!strcmp(target, "/")) strcpy(target, "/index.html");
+    // æœ¬ä½œæ¥­åªæœå‹™ç›®å‰ç›®éŒ„ä¸­çš„å–®ä¸€æª”åï¼›ä¸æ¥å—å­ç›®éŒ„ã€ç·¨ç¢¼è·¯å¾‘æˆ–æŸ¥è©¢åƒæ•¸ã€‚
+    if (target[0] != '/' || target[1] == '\0' ||
+        strspn(target + 1, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-") != strlen(target + 1) ||
+        strstr(target, "..")) {
+        reply_error(fd, "403 Forbidden"); return;
+    }
 
-#if defined (DEBUG)
-	printf("Server socket() is OK...\n");
-#endif
+    if (!strcmp(target, "/cgi")) {
+        if (access("./cgi", X_OK) != 0) { reply_error(fd, "500 Internal Server Error"); return; }
+        setenv("REMOTE_ADDR", inet_ntoa(client.sin_addr), 1);
+        char p_str[10];
+        snprintf(p_str, sizeof(p_str), "%u", ntohs(client.sin_port));
+        setenv("REMOTE_PORT", p_str, 1);
+        if (dup2(fd, STDIN_FILENO) < 0 || dup2(fd, STDOUT_FILENO) < 0 || dup2(fd, STDERR_FILENO) < 0) return;
+        if (fd > STDERR_FILENO) close(fd);
+        execl("./cgi", "./cgi", static_cast<char*>(NULL));
+        reply_error(STDOUT_FILENO, "500 Internal Server Error");
+        return;
+    }
 
-	// ªì©l¤Æ¦a§}µ²ºc
-	bzero(&dest, s_addrlen);
-	dest.sin_family = PF_INET;           // ¨Ï¥Î IPv4
-	dest.sin_port = htons(port);         // ³]©w°ğ¸¹ (±N¥D¾÷¦r¸`§ÇÂà¬°ºô¸ô¦r¸`§Ç)
-	dest.sin_addr.s_addr = htonl(INADDR_ANY); // ±µ¨ü¥ô¦ó¨Ó·½ªº³s½u
+    const char* content_type = get_respmessage(target);
+    if (!content_type) { reply_error(fd, "415 Unsupported Media Type"); return; }
+    int file = open(target + 1, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
+    struct stat st = {};
+    if (file < 0) { reply_error(fd, "404 Not Found"); return; }
+    if (fstat(file, &st) != 0 || !S_ISREG(st.st_mode)) {
+        close(file); reply_error(fd, "403 Forbidden"); return;
+    }
+    char header[256];
+    int length = snprintf(header, sizeof(header),
+        "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %lld\r\nConnection: close\r\n\r\n",
+        content_type, static_cast<long long>(st.st_size));
+    bool ok = length > 0 && length < static_cast<int>(sizeof(header)) && write_all(fd, header, static_cast<size_t>(length));
+    char buffer[Maxbuff];
+    while (ok) {
+        ssize_t n = read(file, buffer, sizeof(buffer));
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) break;
+        ok = write_all(fd, buffer, static_cast<size_t>(n));
+    }
+    close(file);
+}
 
-	// 2. ³]©w Socket ¿ï¶µ¡G¤¹³\¦a§}­«½Æ¨Ï¥Î (Á×§K³s½uµ²§ô«á Port Âê¦º)
-	int sock_opt = 1;
-	if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, (void*)&sock_opt, sizeof(sock_opt)) < 0)
-	{
-		perror("Server setsockopt() - SO_REUSERADDR error!");
-		exit(-1);
-	}
-
-#if defined (DEBUG)
-	printf("Server setsockopt() is OK...\n");
-#endif
-
-	// 3. ¸j©w¦a§}»P°ğ¸¹ (±¾ªùµP)
-	if (bind(sockfd, (struct sockaddr*)&dest, s_addrlen) < 0)
-	{
-		perror("Server bind() error!");
-		exit(-1);
-	}
-
-#if defined (DEBUG)
-	printf("Server bind() is OK...\n");
-#endif
-
-	// 4. ¶}©lºÊÅ¥³s½u (µ¥«İ¹q¸Ü¹aÅT)
-	if (listen(sockfd, 5) < 0)
-	{
-		perror("Server listen() error!");
-		exit(-1);
-	}
-
-#if defined (DEBUG)
-	printf("Server listen is OK...\n");
-#endif
-
-	// ¦øªA¾¹¥D°j°é
-	while (1)
-	{
-		// 5. ±µ¨ü«È¤áºİ³s½u (®³°_¹q¸Ü)
-		if ((clientfd = accept(sockfd, (struct sockaddr*)&client_addr, &temp)) < 0)
-		{
-			perror("Server accept error!");
-			continue; // ¦pªG¥¢±Ñ«hÄ~Äòµ¥«İ¤U¤@­Ó
-		}
-
-#if defined (DEBUG)
-		printf("Server accept() is OK...\n");
-#endif
-
-		char recvbuff[Maxbuff];
-		int len;
-		// 6. ±µ¦¬¨Ó¦ÛÂsÄı¾¹ªº HTTP Request (Å¥«È¤H»¡¸Ü)
-		if ((len = recv(clientfd, recvbuff, Maxbuff, 0)) > 0)
-		{
-			// ±N Socket Âà´«¬°¤å¥ó«ü¼Ğ¡A¤è«K¶i¦æÅª¼g
-			FILE* clientfile = fdopen(clientfd, "wb");
-			if (clientfile == NULL)
-				printf("Server writing error!!");
-			else
-			{
-				char reqst[Maxbuff];
-				// ¸ÑªR½Ğ¨D¦æ¡A¨Ò¦p: "GET /index.html HTTP/1.1"
-				sscanf(recvbuff, "GET %s HTTP", reqst);
-				if (strcmp(reqst, "/") == 0) // ¦pªG¥u½Ğ¨D®Ú¥Ø¿ı¡A¹w³]µ¹ index.html
-					sprintf(reqst, "%s", "/index.html");
-
-				char notuse[Maxbuff];
-				char filetype[Maxbuff]; // ¦s©ñÀÉ®×Ãş«¬ (°ÆÀÉ¦W)
-				char realpath[Maxbuff]; // ¦s©ñÀÉ®×¦b¹q¸£¸Ìªº¹ê»Ú¸ô®|
-
-				// ¤ÀÂ÷ÀÉ¦W»P°ÆÀÉ¦W
-				sscanf(reqst, "%[^.]%s", notuse, filetype);
-				// ­­¨î¼g¤Jªº¤j¤p¡A¤£Åı¥¦À½ÃzªÅ¶¡
-				snprintf(realpath, sizeof(realpath), "%s%s", curpath, reqst); // ²Õ¦X¦¨µ´¹ï¸ô®|
-
-				printf("Real Path: %s\n", realpath);
-				printf("File Type: %s\n", filetype);
-
-				// 7. ¹Á¸Õ¶}±Ò½Ğ¨DªºÀÉ®×
-				FILE* ser_reqstfile;
-				if ((ser_reqstfile = fopen(realpath, "rb")) != NULL)
-				{
-					char ackmessage[Maxbuff];
-					memset(ackmessage, 0, Maxbuff);
-
-					// »s§@ HTTP Response ¼ĞÀY (ª¬ºA½X 200 OK)
-					// ¦b Content-Type «á­±¥[¤W charset=utf-8
-					sprintf(ackmessage, "HTTP/1.1 200 OK\r\nContent-Type:%s; charset=utf-8\r\n\r\n", get_respmessage(filetype));
-					fwrite(ackmessage, sizeof(char), strlen(ackmessage), clientfile);
-
-					char ser_remessage[Maxbuff];
-					long i;
-
-					// ±NÀÉ®×¤º®eÅª¨ú¨Ã¶Ç°eµ¹«È¤áºİ
-					while ((i = fread(ser_remessage, sizeof(char), Maxbuff, ser_reqstfile)) > 0)
-					{
-						fwrite(ser_remessage, sizeof(char), i, clientfile);
-						memset(ser_remessage, 0, Maxbuff);
-					}
-					fclose(ser_reqstfile);
-				}
-				else
-				{
-					printf("Open File Error.\n"); // ÀÉ®×¤£¦s¦bªº³B²z
-				}
-				fclose(clientfile);
-			}
-		}
-		close(clientfd); // µ²§ô¥»¦¸³s½u
-	}
-	close(sockfd);
-	return 0;
+int main() {
+    signal(SIGCHLD, sig_handler);
+    signal(SIGPIPE, SIG_IGN);
+    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sockfd < 0) { perror("socket"); return 1; }
+    int reuse = 1;
+    setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+    sockaddr_in dest = {};
+    dest.sin_family = AF_INET;
+    dest.sin_port = htons(port);
+    dest.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (bind(sockfd, (struct sockaddr*)&dest, sizeof(dest)) != 0 || listen(sockfd, 5) != 0) {
+        perror("bind/listen"); close(sockfd); return 1;
+    }
+    printf("Server starts at http://127.0.0.1:%d/\n", port);
+    while (1) {
+        sockaddr_in client = {};
+        socklen_t length = sizeof(client);
+        int fd = accept(sockfd, (struct sockaddr*)&client, &length);
+        if (fd < 0) { if (errno != EINTR) perror("accept"); continue; }
+        pid_t pid = fork();
+        if (pid == 0) {
+            close(sockfd);
+            serve_client(fd, client);
+            close(fd);
+            exit(0);
+        }
+        if (pid < 0) perror("fork");
+        close(fd);
+    }
 }

@@ -1,119 +1,80 @@
-#include<stdio.h>
-#include<sys/types.h>
-#include<sys/socket.h>
-#include<unistd.h>
-#include<netinet/in.h>
-#include <fcntl.h> //file
-#include <signal.h> // ³B²zíL«Í¦æµ{
-#include <stdlib.h> // fork(), exit() »Ý­n
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <netinet/in.h>
+#include <fcntl.h>
+#include <signal.h>
+#include "../io_helpers.h"
 
 int main() {
-	int sock0,sock;
-	struct sockaddr_in addr;
-	struct sockaddr_in client;
-	socklen_t len;
-	signal(SIGCHLD, SIG_IGN); //¨¾¤î¤À¨­ÅÜíL«Í
-
-	sock0 = socket(AF_INET, SOCK_STREAM, 0); //IPv4 TCP
-	if (sock0 < 0) {
-		printf("erroe \n");
-		return 1;
-	}
-	addr.sin_family = AF_INET;
-	addr.sin_port = htons(12345);
-	addr.sin_addr.s_addr = INADDR_ANY;//±µ¨ü¥ô¦óIP³s½u
-	if (bind(sock0, (struct sockaddr*)&addr, sizeof(addr)) != 0) {        //sizeof()³æ¦V§iª¾
-		perror("bind error");
-		return 1;
-	}
-
-	if (listen(sock0, 5) != 0) {
-		perror("listen error");
-		return 1;
-	} //±Æ¶¤
-
-	printf("Server is running on Port 12345\n");
-
-	//µ¥¤H³s½u¶i¨Ó
-	//¥[¤JµL½a°j°éÅý¦ÑÁó¥Ã»·¤£Ãöªù
-	while (1) {
-		len = sizeof(client);
-		printf("Waiting for client to connect\n");
-		sock = accept(sock0, (struct sockaddr*)&client, &len);// µ{¦¡°õ¦æ¨ì³o·|¥d¦íª½¨ì¦³Client³s¶i¨Ó¬°¤î  &len¬O¦]¬°¶·¦^³ø¹ê»Ú¤j¤p
-		if (sock < 0) {
-			perror("accept error");
-			continue; // ¦pªG³o­Ó«È¤H¥¢±Ñ¡A¤£­n return 1 Ãöªù¡AÄ~Äò±µ¤U¤@­Ó
-		}
-		printf("Client connected\n");
-
-		//©I¥s¤À¨­
-		pid_t pid = fork();
-		if (pid == 0) {
-			//³Q¥Í¥X¨Óªº¤À¨­
-			close(sock0); //¤À¨­¤£¥ÎÅU¤jªù
-
-			//Å¥¨ú Client ¶Ç¹L¨ÓªºÀÉ¦W
-			char filename[256] = { 0 };
-			if (read(sock, filename, sizeof(filename)) > 0) {
-				printf("client wants to upload: %s\n", filename);
-			}
-			else {
-				perror("Server: failed to read file name");
-				close(sock);
-				exit(1); // ¤À¨­¥ô°È¥¢±Ñ¡Aª½±µµn¥X
-			}
-
-			//´ÀÀÉ®×¥[¤W¤À¨­½s¸¹¡AÁ×§K¦h¤H¤W¶Ç¦PÀÉ¦W¼²¨®
-			char save_filename[512];
-			sprintf(save_filename, "Client_%d_%s", getpid(), filename);
-			printf("[Clone Number %d] responsible for receiving the file, which are archived at %s\n", getpid(), save_filename);
-
-			//«Ø¥ß·sÀÉ®×·Ç³Æ¼g¤J
-			// O_APPEND: ½T«O·s¸ê®Æ·|±µ¦bÀÉ®×ªº³Ì§À¤Ú
-			int file_fd = open(save_filename, O_WRONLY | O_CREAT | O_APPEND, 0644);
-			if (file_fd < 0) {
-				perror("file creation failed");
-				close(sock);
-				exit(1);
-			}
-
-			//§iª¾¥Ø«e¦³¦h¤ÖÀÉ®×
-			long long current_size = lseek(file_fd, 0, SEEK_END); //¶Ç°e¤jÀÉ®×
-			if (current_size < 0)current_size = 0;
-			else {
-				printf("the fil currently contains  %lld bytes, notify Client to continue transformitting from here...\n", current_size);
-				write(sock, &current_size, sizeof(current_size));
-			}
-
-			//±µ¦¬°j°é
-			char buffer[1024];
-			int bytes_received;
-			while ((bytes_received = read(sock, buffer, sizeof(buffer))) > 0) {
-				// ±N¦¬¨ìªº¥]»q¼g¶iµwºÐÀÉ®×¤¤
-				if (write(file_fd, buffer, bytes_received) < 0) {
-					perror("Server: failed to write to hard drive");
-					break;
-				}
-			}
-			if (bytes_received < 0) {
-				perror("Server: an error occurred while receiving data; the connection may have been lost");
-			}
-			else {
-				printf("\nfiles received and stored!\n");
-			}
-			close(file_fd);
-			close(sock);
-			exit(0); //¤À¨­°µ§¹¨Æ¥²¶·©I¥s exit(0) ®ø¥¢¡A¤£µM¥¦·|¶]¥h·m±µ«È
-		}
-		else if (pid > 0) {
-			close(sock); //¦ÑÁóªºµ{¦¡½X´N¨ì³o¸Ì¡A¥L·|¥ß¨è¶¶µÛ while(1) ¶]¦^³Ì¤W­±¡AÄ~Äò¥d¦b accept() µ¥«Ý¤U¤@­Ó«È¤H¶iªù
-		}
-		else {
-			perror("Server: calling the cline fork failed");
-			close(sock);
-		}
-	}
-	close(sock0);
-
-	return 0;
+    signal(SIGCHLD, SIG_IGN);
+    signal(SIGPIPE, SIG_IGN);
+    int sock0 = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock0 < 0) { perror("socket"); return 1; }
+    int reuse = 1;
+    setsockopt(sock0, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+    struct sockaddr_in addr = {};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(12345);
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (bind(sock0, (struct sockaddr*)&addr, sizeof(addr)) != 0 || listen(sock0, 5) != 0) {
+        perror("bind/listen"); close(sock0); return 1;
+    }
+    printf("Server is running on 127.0.0.1:12345\n");
+    while (1) {
+        struct sockaddr_in client = {};
+        socklen_t len = sizeof(client);
+        int sock = accept(sock0, (struct sockaddr*)&client, &len);
+        if (sock < 0) {
+            if (errno != EINTR) perror("accept");
+            continue;
+        }
+        // æ¯æ¢é€£ç·šç”±ä¸€å€‹å­è¡Œç¨‹æŽ¥æ”¶ï¼›çˆ¶è¡Œç¨‹ç¹¼çºŒ acceptã€‚
+        pid_t pid = fork();
+        if (pid == 0) {
+            close(sock0);
+            char filename[256] = {};
+            if (!read_exact(sock, filename, sizeof(filename)) ||
+                memchr(filename, '\0', sizeof(filename)) == NULL || filename[0] == '\0' ||
+                strspn(filename, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-") != strlen(filename)) {
+                fprintf(stderr, "Invalid or incomplete filename\n");
+                close(sock); exit(1);
+            }
+            // ä¿ç•™èª²å ‚ç‰ˆçš„ PID å‘½åæ–¹å¼ï¼šä¸åŒé€£ç·šæœƒç”¢ç”Ÿä¸åŒæª”æ¡ˆã€‚
+            char save_filename[512];
+            snprintf(save_filename, sizeof(save_filename), "Client_%d_%s", getpid(), filename);
+            int file_fd = open(save_filename, O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW, 0644);
+            struct stat st = {};
+            if (file_fd < 0 || fstat(file_fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+                perror("open output");
+                if (file_fd >= 0) close(file_fd);
+                close(sock); exit(1);
+            }
+            long long current_size = lseek(file_fd, 0, SEEK_END);
+            if (current_size < 0 || !write_all(sock, &current_size, sizeof(current_size))) {
+                perror("send offset"); close(file_fd); close(sock); exit(1);
+            }
+            char buffer[1024];
+            bool ok = true;
+            while (1) {
+                ssize_t n = read(sock, buffer, sizeof(buffer));
+                if (n < 0 && errno == EINTR) continue;
+                if (n < 0) { perror("receive"); ok = false; break; }
+                if (n == 0) break;
+                if (!write_all(file_fd, buffer, static_cast<size_t>(n))) {
+                    perror("write output"); ok = false; break;
+                }
+            }
+            close(file_fd);
+            close(sock);
+            if (ok) printf("Saved %s\n", save_filename);
+            exit(ok ? 0 : 1);
+        }
+        if (pid < 0) perror("fork");
+        close(sock);
+    }
 }

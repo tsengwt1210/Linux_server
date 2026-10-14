@@ -1,0 +1,2 @@
+Sample file for the TCP upload exercise.
+This file contains synthetic text and can be freely changed for local testing.

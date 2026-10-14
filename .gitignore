@@ -1,0 +1,13 @@
+/build/
+/run/
+**/__pycache__/
+*.pyc
+*.o
+*.out
+*.exe
+.vs/
+**/obj/
+**/bin/
+*.vcxproj.user
+*.log
+Client_*_*

@@ -1,0 +1,24 @@
+name: Linux build and loopback tests
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - name: Show tool versions
+        run: |
+          g++ --version
+          make --version
+          python3 --version
+      - name: Compile all five programs
+        run: make -j2
+      - name: Test TCP, HTTP and CGI on loopback
+        run: make test

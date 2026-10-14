@@ -1,84 +1,52 @@
 #include <stdio.h>
-#include <string.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <netinet/in.h>
-#include <arpa/inet.h> // Âà´« IP ¦a§}®æ¦¡
-#include <fcntl.h> //file
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <signal.h>
+#include "../io_helpers.h"
 
 int main() {
-	int sock;
-	struct sockaddr_in server;
-	char filename[] = "homework.txt";
-	
-	sock = socket(AF_INET, SOCK_STREAM, 0);
-	if (sock < 0) {
-		perror("socket error");
-		return 1;
-	}
-
-	//³]©wsever ªºIP©Mport(¿é¤J¹ï¤èªº¸¹½X)
-	server.sin_family = AF_INET;
-	server.sin_port = htons(12345);
-	inet_pton(AF_INET, "127.0.0.1", &server.sin_addr.s_addr); //³]©w IP ¬°¥»¾÷ºÝ (127.0.0.1)¡A¦]¬°§Ú­Ìªº Server ¤]¶]¦b¦P¤@¥x¹q¸£¤W
-	printf("connecting server\n");
-
-	if (connect(sock, (struct sockaddr*)&server, sizeof(server)) != 0) {
-		perror("connect error");
-		return 1;
-	}
-	printf("connect successful\n");
-
-	//¶Ç°eÀÉ¦W
-	if (write(sock, filename, sizeof(filename)) < 0){
-		perror("Client: filed to transfer file name");
-		close(sock);
-		return 1;
-	}
-
-	//¨ú±o¥Ø«e¶Ç°e¶i«×
-	long long offset = 0;
-	if (read(sock, &offset, sizeof(offset)) < 0) {
-		perror("Client: filed to transfer file name");
-		close(sock);
-		return 1;
-	}
-	printf("Server already has %lld bytes and is preparing for fast transfer...\n", offset);
-
-	//¥´¶}¥»¦aÀÉ®×
-	int file_fd = open(filename, O_RDONLY);
-	if (file_fd < 0) {
-		perror("Client: failed to open local file. Please check if the file exists.");
-		close(sock);
-		return 1;
-	}
-	//§ÖÂàÀÉ®×«ü¼Ð
-	if (lseek(file_fd, offset, SEEK_SET) < 0) {
-		perror("Client: file indicators failed to transfer quickly");
-		close(sock);
-		close(file_fd);
-	}
-
-	//¶Ç°e¦^°é
-	char buffer[1024];
-	int bytes_read;
-	printf("start ttansferring file contents\n");
-	while ((bytes_read = read(file_fd, buffer, sizeof(buffer))) > 0) {
-		if (write(sock, buffer, bytes_read) < 0) {
-			perror("Client: network transmission failed; connection may be lost");
-			break;
-		}
-	}
-	if (bytes_read < 0) {
-		perror("Client: an error occurred while reading a local file");
-	}
-	else {
-		printf("\nfile transfer complete!\n");
-	}
-
-	close(sock);
-	close(file_fd);
-
-	return 0;
+    signal(SIGPIPE, SIG_IGN);
+    // æª”åå›ºå®š 256 bytesï¼Œå…¶å¾Œå›žå‚³ native long long offsetã€‚
+    char filename[256] = "homework.txt";
+    int file_fd = open(filename, O_RDONLY);
+    if (file_fd < 0) { perror("open homework.txt"); return 1; }
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) { perror("socket"); close(file_fd); return 1; }
+    struct sockaddr_in server = {};
+    server.sin_family = AF_INET;
+    server.sin_port = htons(12345);
+    inet_pton(AF_INET, "127.0.0.1", &server.sin_addr);
+    if (connect(sock, (struct sockaddr*)&server, sizeof(server)) != 0) {
+        perror("connect"); close(sock); close(file_fd); return 1;
+    }
+    long long offset = 0;
+    struct stat st = {};
+    if (!write_all(sock, filename, sizeof(filename)) ||
+        !read_exact(sock, &offset, sizeof(offset)) ||
+        fstat(file_fd, &st) != 0 || offset < 0 || offset > st.st_size ||
+        lseek(file_fd, offset, SEEK_SET) < 0) {
+        fprintf(stderr, "Failed handshake or invalid file offset\n");
+        close(sock); close(file_fd); return 1;
+    }
+    printf("Server offset: %lld bytes\n", offset);
+    bool ok = true;
+    char buffer[1024];
+    while (1) {
+        ssize_t n = read(file_fd, buffer, sizeof(buffer));
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0) { perror("read file"); ok = false; break; }
+        if (n == 0) break;
+        if (!write_all(sock, buffer, static_cast<size_t>(n))) {
+            perror("send file"); ok = false; break;
+        }
+    }
+    close(sock);
+    close(file_fd);
+    if (ok) printf("File contents sent. Compare the saved file to verify completion.\n");
+    return ok ? 0 : 1;
 }
